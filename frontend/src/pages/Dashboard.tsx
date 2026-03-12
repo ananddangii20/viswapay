@@ -5,6 +5,7 @@ import {
   TrendingUp, Link2, LogOut, Gauge
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/context/AuthContext";
 
 const stagger = {
   hidden: {},
@@ -24,6 +25,12 @@ const transactions = [
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    navigate("/");
+  };
 
   return (
     <div className="min-h-screen pb-8">
@@ -31,9 +38,9 @@ const Dashboard = () => {
       <div className="px-4 pt-6 pb-4 flex items-center justify-between">
         <div>
           <p className="text-muted-foreground text-sm">Welcome back</p>
-          <h1 className="text-xl font-bold font-display">Arjun Patel</h1>
+          <h1 className="text-xl font-bold font-display">{user?.name ?? "User"}</h1>
         </div>
-        <Button variant="ghost" size="icon" onClick={() => navigate("/")} className="text-muted-foreground">
+        <Button variant="ghost" size="icon" onClick={handleLogout} className="text-muted-foreground">
           <LogOut className="w-5 h-5" />
         </Button>
       </div>

@@ -1,0 +1,63 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Node dependencies
+node_modules/
+
+# Build outputs
+build/
+dist/
+coverage/
+
+# Frontend (Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# Backend
+backend/node_modules/
+backend/dist/
+backend/coverage/
+
+# Hardhat / Solidity artifacts
+backend/artifacts/
+backend/cache/
+backend/typechain-types/
+backend/ignition/deployments/
+backend/blockchain/artifacts/
+backend/blockchain/cache/
+backend/blockchain/typechain-types/
+backend/blockchain/ignition/deployments/
+
+# Python / ML service
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+ml-service/.venv/
+ml-service/venv/
+
+# Misc
+*.tmp
+*.temp

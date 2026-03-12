@@ -1,0 +1,18 @@
+Backend npm requirements (from package.json)
+
+Dependencies:
+@openzeppelin/contracts@^5.6.1
+axios@^1.13.6
+bcrypt@^6.0.0
+cors@^2.8.6
+dotenv@^17.3.1
+ethers@^6.16.0
+express@^5.2.1
+jsonwebtoken@^9.0.3
+mongoose@^9.3.0
+uuid@^13.0.0
+web3@^4.16.0
+
+Dev dependencies:
+hardhat@^3.1.12
+nodemon@^3.1.14

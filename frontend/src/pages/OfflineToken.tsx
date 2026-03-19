@@ -11,7 +11,9 @@ import {
   WifiOff,
   AlertCircle,
   Shield,
-  RefreshCw
+  RefreshCw,
+  Camera,
+  Send,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +23,7 @@ import { toast } from "sonner";
 import { useCountdownTimer } from "@/hooks/useCountdownTimer";
 import { useOfflineDetection } from "@/hooks/useOfflineDetection";
 import OfflinePaymentSuccessModal from "@/components/OfflinePaymentSuccessModal";
+import QRScannerModal from "@/components/QRScannerModal";
 
 interface TokenPreview {
   token: string;
@@ -37,11 +40,16 @@ interface PendingRedeem {
   timestamp: number;
 }
 
+type OfflineMode = "sender" | "receiver";
+
 const OfflineToken = () => {
   const navigate = useNavigate();
   const { token: authToken, user, setAuthSession } = useAuth();
 
-  // UI State
+  // Mode State
+  const [mode, setMode] = useState<OfflineMode>("sender");
+
+  // Sender UI State
   const [receiverEmail, setReceiverEmail] = useState("");
   const [amount, setAmount] = useState("1000");
   const [currency, setCurrency] = useState("INR");
@@ -49,9 +57,12 @@ const OfflineToken = () => {
   const [generatedToken, setGeneratedToken] = useState<TokenPreview | null>(
     null
   );
+
+  // Receiver UI State
   const [manualToken, setManualToken] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [showQRScanner, setShowQRScanner] = useState(false);
   const [successData, setSuccessData] = useState<{
     transactionId: string;
     blockchainHash: string;
@@ -130,31 +141,20 @@ const OfflineToken = () => {
     try {
       setIsGenerating(true);
 
-      // Try primary endpoint first
       let response;
       try {
-        response = await api.post(
-          "/payment/generate-token",
-          {
-            receiverEmail: receiverEmail.trim(),
-            amount: Number(amount),
-            currency,
-            bankName: bankName.trim() || undefined
-          },
-          { headers: getAuthHeaders() }
-        );
-      } catch {
-        // Fallback to token endpoint
         response = await api.post(
           "/token/generate",
           {
             receiverEmail: receiverEmail.trim(),
             amount: Number(amount),
             currency,
-            bankName: bankName.trim() || undefined
+            bankName: bankName.trim() || undefined,
           },
           { headers: getAuthHeaders() }
         );
+      } catch (error) {
+        throw error;
       }
 
       const data = response.data?.data || response.data;
@@ -164,7 +164,6 @@ const OfflineToken = () => {
         throw new Error("Token not received");
       }
 
-      // Set token preview with countdown data
       setGeneratedToken({
         token: tokenValue,
         expiry: new Date(data.expiry),
@@ -172,14 +171,14 @@ const OfflineToken = () => {
         qrPayload: data.qrPayload,
         amount: data.amount,
         currency: data.currency,
-        receiver: data.receiver
+        receiver: data.receiver,
       });
 
-      setManualToken(tokenValue);
       toast.success("Offline token generated! ✨");
     } catch (error) {
       const message =
-        (error as { response?: { data?: { message?: string } } })?.response?.data?.message || "Token generation failed";
+        (error as { response?: { data?: { message?: string } } })?.response
+          ?.data?.message || "Token generation failed";
       toast.error(message);
     } finally {
       setIsGenerating(false);
@@ -195,21 +194,15 @@ const OfflineToken = () => {
     try {
       setIsVerifying(true);
 
-      // Try primary endpoint first
       let response;
       try {
-        response = await api.post(
-          "/payment/verify-token",
-          { token: tokenToVerify.trim() },
-          { headers: getAuthHeaders() }
-        );
-      } catch {
-        // Fallback to token endpoint
         response = await api.post(
           "/token/redeem",
           { token: tokenToVerify.trim() },
           { headers: getAuthHeaders() }
         );
+      } catch (error) {
+        throw error;
       }
 
       const responseData = response.data;
@@ -217,46 +210,50 @@ const OfflineToken = () => {
 
       // Verify token matched successfully
       if (responseData?.tokenMatched === true || responseData?.success === true) {
-        // Update user balance in AuthContext if we're the receiver
+        // Update balance in AuthContext
         if (user && responseData?.receiverBalance !== undefined) {
-          const updatedUser = { ...user, balance: responseData.receiverBalance };
+          const updatedUser = {
+            ...user,
+            balance: responseData.receiverBalance,
+          };
           setAuthSession(authToken!, updatedUser);
         }
 
-        // Show success with blockchain hash
+        // Show success modal
         setSuccessData({
           transactionId: data.transactionId || data.id,
           blockchainHash: data.blockchainHash,
           amount: data.amount,
           currency: data.currency,
           receiver: data.receiver,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         });
 
         setShowSuccessModal(true);
-        toast.success("Token matched successfully! Payment secured on blockchain 🎉");
+        toast.success("Token matched successfully! Payment secured 🎉");
 
-        // Reset form after short delay
+        // Reset receiver form after delay
         setTimeout(() => {
-          setGeneratedToken(null);
           setManualToken("");
-          setReceiverEmail("");
-          setAmount("1000");
         }, 2000);
+
+        // Auto navigate to dashboard after success
+        setTimeout(() => {
+          navigate("/dashboard");
+        }, 3000);
       }
     } catch (error) {
-      const errorResponse = (error as { response?: { data?: any } })?.response?.data;
+      const errorResponse = (error as { response?: { data?: any } })?.response
+        ?.data;
       const errorMsg = errorResponse?.message || "Token verification failed";
       const errorType = errorResponse?.errorType;
 
-      // Provide differentiated error messages based on error type
       const errorDetails = getErrorDetails(errorType, errorMsg);
 
       if (!isOnline) {
         toast.error("You are offline. Payment queued for later.");
         savePendingRedeem(tokenToVerify);
       } else {
-        // Show detailed error with appropriate emotion
         toast.error(errorDetails);
       }
     } finally {
@@ -264,7 +261,10 @@ const OfflineToken = () => {
     }
   };
 
-  const getErrorDetails = (errorType: string | undefined, fallback: string): string => {
+  const getErrorDetails = (
+    errorType: string | undefined,
+    fallback: string
+  ): string => {
     switch (errorType) {
       case "TOKEN_MISMATCH":
         return "❌ Token not found - Check the code and try again";
@@ -273,9 +273,9 @@ const OfflineToken = () => {
       case "TOKEN_ALREADY_USED":
         return "🔄 Token already redeemed - Cannot use twice";
       case "INSUFFICIENT_BALANCE":
-        return "💸 Sender has insufficient balance - Transaction cannot be completed";
+        return "💸 Sender has insufficient balance";
       case "UNAUTHORIZED_RECEIVER":
-        return "🚫 You are not the intended receiver of this token";
+        return "🚫 You are not the intended receiver";
       case "USER_NOT_FOUND":
         return "👤 User account not found";
       case "MISSING_TOKEN":
@@ -287,8 +287,8 @@ const OfflineToken = () => {
     }
   };
 
-  const verifyToken = async () => {
-    await verifyTokenRequest(manualToken);
+  const handleRedeemClick = () => {
+    verifyTokenRequest(manualToken);
   };
 
   const copyToken = () => {
@@ -307,7 +307,17 @@ const OfflineToken = () => {
 
   const generateNewToken = () => {
     setGeneratedToken(null);
-    setManualToken("");
+    setReceiverEmail("");
+    setAmount("1000");
+    setCurrency("INR");
+    setBankName("");
+  };
+
+  // ==================== RECEIVER MODE ====================
+
+  const handleQRScanned = (scannedToken: string) => {
+    setManualToken(scannedToken.toUpperCase());
+    toast.success("QR code scanned!");
   };
 
   return (
@@ -324,7 +334,7 @@ const OfflineToken = () => {
             <div className="flex items-center gap-2 text-red-600 max-w-md mx-auto">
               <WifiOff className="w-4 h-4 flex-shrink-0" />
               <span className="text-sm font-semibold">
-                You are offline. Payments will sync when online.
+                You are offline. Tokens will sync when online.
               </span>
             </div>
           </motion.div>
@@ -340,25 +350,31 @@ const OfflineToken = () => {
             exit={{ y: -100, opacity: 0 }}
             className="fixed top-14 left-0 right-0 z-40 bg-amber-500/10 border-b border-amber-500/30 px-4 py-2"
           >
-            <div className="flex items-center justify-between max-w-md mx-auto">
-              <div className="flex items-center gap-2 text-amber-600">
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span className="text-xs font-semibold">
-                  {pendingRedeems.length} pending payment(s) syncing...
-                </span>
-              </div>
+            <div className="flex items-center gap-2 text-amber-600 max-w-md mx-auto">
+              <RefreshCw className="w-4 h-4 animate-spin" />
+              <span className="text-xs font-semibold">
+                {pendingRedeems.length} payment(s) syncing...
+              </span>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Header */}
-      <div className={`px-4 pt-6 pb-4 flex items-center gap-3 ${!isOnline ? "mt-12" : ""}`}>
-        <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")}>
-          <ArrowLeft className="w-5 h-5" />
-        </Button>
-        <h1 className="text-lg font-bold font-display">Offline Token</h1>
-        <div className="ml-auto flex items-center gap-1">
+      <div className={`px-4 pt-6 pb-4 flex items-center justify-between ${
+        !isOnline ? "mt-12" : ""
+      }`}>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate("/dashboard")}
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <h1 className="text-lg font-bold font-display">Offline Payment</h1>
+        </div>
+        <div className="flex items-center gap-1">
           {isOnline ? (
             <>
               <Wifi className="w-4 h-4 text-success" />
@@ -367,7 +383,9 @@ const OfflineToken = () => {
           ) : (
             <>
               <WifiOff className="w-4 h-4 text-destructive animate-pulse" />
-              <span className="text-xs text-destructive font-semibold">Offline</span>
+              <span className="text-xs text-destructive font-semibold">
+                Offline
+              </span>
             </>
           )}
         </div>
@@ -378,85 +396,128 @@ const OfflineToken = () => {
         animate={{ opacity: 1, y: 0 }}
         className="px-4 space-y-4"
       >
-        {/* Main Card */}
-        <div className="glass-card p-6 flex flex-col items-center text-center">
-          <div className="w-14 h-14 rounded-2xl bg-success/15 flex items-center justify-center mb-4">
-            <Wifi className="w-7 h-7 text-success" />
-          </div>
-          <h2 className="text-lg font-bold font-display mb-1">Offline Payments</h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            Generate a one-time token to make payments even without internet. Your transaction will be secured on the blockchain.
-          </p>
+        {/* Mode Tabs */}
+        <div className="flex gap-2 bg-secondary/20 p-1 rounded-lg">
+          <button
+            onClick={() => {
+              setMode("sender");
+              setManualToken("");
+            }}
+            className={`flex-1 py-2 px-3 rounded-md font-semibold text-sm transition-all ${
+              mode === "sender"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground"
+            }`}
+          >
+            <Send className="w-4 h-4 inline mr-1" />
+            Generate
+          </button>
+          <button
+            onClick={() => {
+              setMode("receiver");
+              setGeneratedToken(null);
+              setReceiverEmail("");
+            }}
+            className={`flex-1 py-2 px-3 rounded-md font-semibold text-sm transition-all ${
+              mode === "receiver"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground"
+            }`}
+          >
+            <CheckCircle className="w-4 h-4 inline mr-1" />
+            Redeem
+          </button>
+        </div>
 
-          {/* Token Generation Form */}
-          {!generatedToken ? (
-            <div className="w-full space-y-3">
-              <Input
-                value={receiverEmail}
-                onChange={(e) => setReceiverEmail(e.target.value)}
-                className="bg-muted/50 h-11"
-                placeholder="Receiver email"
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <Input
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  type="number"
-                  className="bg-muted/50 h-11"
-                  placeholder="Amount"
-                />
-                <select
-                  value={currency}
-                  onChange={(e) => setCurrency(e.target.value)}
-                  className="bg-muted/50 h-11 rounded-md px-3 text-sm border border-border"
-                >
-                  <option value="INR">INR</option>
-                  <option value="USD">USD</option>
-                  <option value="EUR">EUR</option>
-                  <option value="GBP">GBP</option>
-                  <option value="AED">AED</option>
-                </select>
-              </div>
-              <Input
-                value={bankName}
-                onChange={(e) => setBankName(e.target.value)}
-                className="bg-muted/50 h-11"
-                placeholder="Bank name (optional)"
-              />
-
-              <Button
-                onClick={generateToken}
-                disabled={isGenerating}
-                className="w-full h-12 gradient-primary text-primary-foreground font-semibold glow-blue"
-              >
-                {isGenerating ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Generating...
-                  </span>
-                ) : (
-                  "Generate Offline Token"
-                )}
-              </Button>
+        {/* ==================== SENDER MODE ==================== */}
+        {mode === "sender" && (
+          <motion.div
+            key="sender"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="glass-card p-6 space-y-4"
+          >
+            <div className="text-center mb-4">
+              <h2 className="text-lg font-bold font-display">Generate Token</h2>
+              <p className="text-sm text-muted-foreground">
+                Create a one-time payment token
+              </p>
             </div>
-          ) : (
-            // Token Display Section
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="w-full space-y-4"
-            >
-              {/* Token Generated Card */}
-              <div className="glass-card p-4 glow-green border border-success/30">
-                <div className="flex items-center justify-center gap-2 mb-3">
-                  <CheckCircle className="w-4 h-4 text-success" />
+
+            {!generatedToken ? (
+              // Token Generation Form
+              <div className="space-y-3">
+                <Input
+                  value={receiverEmail}
+                  onChange={(e) => setReceiverEmail(e.target.value)}
+                  className="bg-muted/50 h-11"
+                  placeholder="Receiver email"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    type="number"
+                    className="bg-muted/50 h-11"
+                    placeholder="Amount"
+                  />
+                  <select
+                    value={currency}
+                    onChange={(e) => setCurrency(e.target.value)}
+                    className="bg-muted/50 h-11 rounded-md px-3 text-sm border border-border"
+                  >
+                    <option value="INR">INR</option>
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                    <option value="GBP">GBP</option>
+                    <option value="AED">AED</option>
+                  </select>
+                </div>
+                <Input
+                  value={bankName}
+                  onChange={(e) => setBankName(e.target.value)}
+                  className="bg-muted/50 h-11"
+                  placeholder="Bank name (optional)"
+                />
+
+                <Button
+                  onClick={generateToken}
+                  disabled={
+                    isGenerating ||
+                    !receiverEmail.trim() ||
+                    !amount ||
+                    Number(amount) <= 0
+                  }
+                  className="w-full h-12 gradient-primary font-semibold"
+                >
+                  {isGenerating ? (
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Generating...
+                    </span>
+                  ) : (
+                    "Generate Token"
+                  )}
+                </Button>
+              </div>
+            ) : (
+              // Token Display Section
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="space-y-4"
+              >
+                {/* Token Generated Badge */}
+                <div className="bg-success/10 border border-success/30 rounded-xl p-3 flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 text-success flex-shrink-0" />
                   <span className="text-sm font-semibold text-success">
                     Token Generated
                   </span>
                 </div>
 
-                {/* QR Code with Live Countdown */}
-                <div className="relative mb-4 flex justify-center">
+                {/* QR Code with Countdown */}
+                <div className="flex justify-center">
                   <div className="relative">
                     <motion.img
                       initial={{ scale: 0.9, opacity: 0 }}
@@ -470,16 +531,14 @@ const OfflineToken = () => {
 
                     {/* Countdown Badge */}
                     <motion.div
-                      className={`absolute -bottom-3 -right-3 w-16 h-16 rounded-full flex items-center justify-center font-bold font-mono text-sm font-display ${
+                      className={`absolute -bottom-3 -right-3 w-14 h-14 rounded-full flex items-center justify-center font-bold font-mono text-xs ${
                         countdown.progressPercent > 50
-                          ? "bg-gradient-to-br from-success to-success/80"
+                          ? "bg-success"
                           : countdown.progressPercent > 25
-                            ? "bg-gradient-to-br from-amber-500 to-amber-600"
-                            : "bg-gradient-to-br from-destructive to-destructive/80"
+                            ? "bg-amber-500"
+                            : "bg-destructive"
                       } text-white shadow-lg border-4 border-card`}
-                      animate={{
-                        scale: countdown.isExpired ? [1, 1.1, 1] : 1
-                      }}
+                      animate={{ scale: countdown.isExpired ? [1, 1.1, 1] : 1 }}
                       transition={{ duration: 0.5, repeat: Infinity }}
                     >
                       {countdown.displayText}
@@ -488,21 +547,22 @@ const OfflineToken = () => {
                 </div>
 
                 {/* Token Code Display */}
-                <div className="bg-muted/50 rounded-lg p-4 flex items-center justify-center mb-3">
+                <div className="bg-muted/50 rounded-lg p-4 flex items-center justify-center">
                   <span className="text-2xl font-bold font-mono tracking-widest">
                     {generatedToken.token}
                   </span>
                 </div>
 
-                {/* Copy and Share Actions */}
-                <div className="grid grid-cols-2 gap-2 mb-3">
+                {/* Copy Actions */}
+                <div className="grid grid-cols-2 gap-2">
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={copyToken}
                     className="text-xs h-9"
                   >
-                    <Copy className="w-3 h-3 mr-1" /> Copy Code
+                    <Copy className="w-3 h-3 mr-1" />
+                    Copy Code
                   </Button>
                   <Button
                     variant="outline"
@@ -510,28 +570,29 @@ const OfflineToken = () => {
                     onClick={copyQRPayload}
                     className="text-xs h-9"
                   >
-                    <Copy className="w-3 h-3 mr-1" /> QR Data
+                    <Copy className="w-3 h-3 mr-1" />
+                    Copy QR
                   </Button>
                 </div>
 
-                {/* Security Indicators */}
-                <div className="flex gap-1 text-xs mb-3">
-                  <div className="flex-1 bg-primary/10 rounded-lg py-2 px-2 border border-primary/20">
+                {/* Security Info */}
+                <div className="flex gap-2 text-xs">
+                  <div className="flex-1 bg-primary/10 rounded-lg py-1.5 px-2 border border-primary/20">
                     <Shield className="w-3 h-3 text-primary inline mr-1" />
                     <span className="text-primary font-semibold">Encrypted</span>
                   </div>
-                  <div className="flex-1 bg-success/10 rounded-lg py-2 px-2 border border-success/20">
+                  <div className="flex-1 bg-success/10 rounded-lg py-1.5 px-2 border border-success/20">
                     <Wifi className="w-3 h-3 text-success inline mr-1" />
-                    <span className="text-success font-semibold">Secured</span>
+                    <span className="text-success font-semibold">Blockchain</span>
                   </div>
                 </div>
 
-                {/* Expiry Warning */}
+                {/* Expiry Warnings */}
                 {countdown.progressPercent <= 25 && !countdown.isExpired && (
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2 flex gap-2 items-start"
+                    className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2 flex gap-2"
                   >
                     <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
                     <span className="text-xs text-amber-700 font-semibold">
@@ -544,7 +605,7 @@ const OfflineToken = () => {
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="bg-destructive/10 border border-destructive/30 rounded-lg p-2 flex gap-2 items-start"
+                    className="bg-destructive/10 border border-destructive/30 rounded-lg p-2 flex gap-2"
                   >
                     <AlertCircle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
                     <span className="text-xs text-destructive font-semibold">
@@ -552,62 +613,111 @@ const OfflineToken = () => {
                     </span>
                   </motion.div>
                 )}
-              </div>
 
-              {/* Redemption Section */}
-              <div className="glass-card p-4 space-y-3">
-                <label className="text-xs text-muted-foreground font-semibold block">
-                  Manual Code Entry (for receiver)
-                </label>
+                {/* Generate New Token */}
+                <Button
+                  variant="outline"
+                  onClick={generateNewToken}
+                  className="w-full"
+                >
+                  Generate New Token
+                </Button>
+              </motion.div>
+            )}
+
+            {/* Info Card */}
+            <div className="bg-secondary/10 rounded-lg p-3 space-y-1">
+              <p className="text-xs text-muted-foreground flex gap-1">
+                <Clock className="w-3 h-3 flex-shrink-0" />
+                <span>
+                  Share the token or QR code with receiver (valid for 5 mins)
+                </span>
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {/* ==================== RECEIVER MODE ==================== */}
+        {mode === "receiver" && (
+          <motion.div
+            key="receiver"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="glass-card p-6 space-y-4"
+          >
+            <div className="text-center mb-4">
+              <h2 className="text-lg font-bold font-display">Receive Payment</h2>
+              <p className="text-sm text-muted-foreground">
+                Enter or scan the token code
+              </p>
+            </div>
+
+            {/* Token Input */}
+            <div className="space-y-3">
+              <label className="text-xs font-semibold text-muted-foreground block">
+                Token Code
+              </label>
+              <div className="flex gap-2">
                 <Input
                   value={manualToken}
                   onChange={(e) => setManualToken(e.target.value.toUpperCase())}
-                  className="bg-muted/50 h-11 font-mono text-center text-lg letter-spacing"
-                  placeholder="Enter token code"
-                  disabled={countdown.isExpired}
+                  className="bg-muted/50 h-11 font-mono text-center text-lg letter-spacing flex-1"
+                  placeholder="e.g., ABC123"
+                  disabled={isVerifying}
                 />
                 <Button
-                  onClick={verifyToken}
-                  disabled={isVerifying || countdown.isExpired || !manualToken.trim()}
-                  className="w-full h-10 gradient-primary text-primary-foreground font-semibold"
+                  onClick={() => setShowQRScanner(true)}
+                  variant="outline"
+                  size="icon"
+                  className="h-11"
+                  title="Scan QR Code"
                 >
-                  {isVerifying ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Verifying...
-                    </span>
-                  ) : (
-                    "Redeem Token"
-                  )}
+                  <Camera className="w-4 h-4" />
                 </Button>
               </div>
+            </div>
 
-              {/* Generate New Token Button */}
-              <Button
-                variant="outline"
-                onClick={generateNewToken}
-                className="w-full border-primary/30 text-primary"
-              >
-                Generate New Token
-              </Button>
-            </motion.div>
-          )}
-        </div>
+            {/* Redeem Button */}
+            <Button
+              onClick={handleRedeemClick}
+              disabled={isVerifying || !manualToken.trim()}
+              className="w-full h-12 gradient-primary font-semibold"
+            >
+              {isVerifying ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Processing...
+                </span>
+              ) : (
+                <>
+                  <CheckCircle className="w-4 h-4 mr-2" />
+                  Redeem Token
+                </>
+              )}
+            </Button>
 
-        {/* Info Card */}
-        {generatedToken && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="glass-card p-3 space-y-2"
-          >
-            <p className="text-xs text-muted-foreground text-left">
-              <Clock className="w-3 h-3 inline mr-1" />
-              Share this token with the receiver. Payments can be redeemed when both devices are online. Your transaction is secured on the blockchain with SHA256 hashing.
-            </p>
+            {/* Info Card */}
+            <div className="bg-secondary/10 rounded-lg p-3 space-y-1">
+              <p className="text-xs text-muted-foreground flex gap-1">
+                <Clock className="w-3 h-3 flex-shrink-0" />
+                <span>
+                  {isOnline
+                    ? "Payment will be processed immediately"
+                    : "Payment will be queued and sent when online"}
+                </span>
+              </p>
+            </div>
           </motion.div>
         )}
       </motion.div>
+
+      {/* QR Scanner Modal */}
+      <QRScannerModal
+        isOpen={showQRScanner}
+        onClose={() => setShowQRScanner(false)}
+        onScan={handleQRScanned}
+      />
 
       {/* Success Modal */}
       <OfflinePaymentSuccessModal

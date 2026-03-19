@@ -1,11 +1,37 @@
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Send, QrCode, Wifi, Shield, ArrowUpRight, ArrowDownLeft,
-  TrendingUp, Link2, LogOut, Gauge
+  TrendingUp, Link2, LogOut, Gauge, Loader2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
+import api from "@/lib/axios";
+import { toast } from "sonner";
+import GlobalTransferMap from "@/components/GlobalTransferMap";
+
+interface TransactionHistoryItem {
+  _id?: string;
+  id?: string | number;
+  sender?: string;
+  receiver?: string;
+  senderCountry?: string;
+  receiverCountry?: string;
+  receiverEmail?: string;
+  amount?: number;
+  currency?: string;
+  bankName?: string;
+  status?: string;
+  blockchainHash?: string;
+  createdAt?: string;
+}
+
+const shortHash = (hash?: string) => {
+  if (!hash) return "";
+  if (hash.length <= 14) return hash;
+  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
+};
 
 const stagger = {
   hidden: {},
@@ -16,21 +42,61 @@ const fadeUp = {
   show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
-const transactions = [
-  { id: 1, sender: "You", receiver: "Alice (US)", amount: "$50.00", status: "Completed", type: "out" },
-  { id: 2, sender: "Bob (UK)", receiver: "You", amount: "£120.00", status: "Completed", type: "in" },
-  { id: 3, sender: "You", receiver: "Chen (CN)", amount: "¥800.00", status: "Pending", type: "out" },
-  { id: 4, sender: "Maria (BR)", receiver: "You", amount: "R$200.00", status: "Completed", type: "in" },
-];
-
 const Dashboard = () => {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
+  const [transactions, setTransactions] = useState<TransactionHistoryItem[]>([]);
+  const [loadingTransactions, setLoadingTransactions] = useState(true);
 
   const handleLogout = () => {
     logout();
     navigate("/");
   };
+
+  useEffect(() => {
+    const fetchHistory = async () => {
+      setLoadingTransactions(true);
+
+      try {
+        const response = await api.get("/payment/history", {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : "",
+          },
+        });
+
+        const history = Array.isArray(response.data)
+          ? response.data
+          : Array.isArray((response.data as { transactions?: unknown[] })?.transactions)
+            ? (response.data as { transactions: TransactionHistoryItem[] }).transactions
+            : [];
+
+        setTransactions(history.slice(0, 5));
+      } catch {
+        setTransactions([]);
+        toast.error("Failed to load recent transactions");
+      } finally {
+        setLoadingTransactions(false);
+      }
+    };
+
+    void fetchHistory();
+  }, [token]);
+
+  const recentTransactions = useMemo(
+    () =>
+      transactions.map((tx) => {
+        const isOutgoing = true;
+        const amount = Number(tx.amount ?? 0);
+        return {
+          ...tx,
+          type: isOutgoing ? "out" : "in",
+          amountText: `${(tx.currency ?? "USD").toUpperCase()} ${amount.toFixed(2)}`,
+          displayName: tx.receiverEmail ?? tx.receiver ?? "Unknown receiver",
+          statusText: (tx.status ?? "PENDING").toString(),
+        };
+      }),
+    [transactions],
+  );
 
   return (
     <div className="min-h-screen pb-8">
@@ -58,8 +124,8 @@ const Dashboard = () => {
             <span className="text-xs px-2 py-0.5 rounded-full bg-secondary/20 text-secondary">🇮🇳 India</span>
           </div>
           <p className="text-muted-foreground text-sm">Wallet Balance</p>
-          <h2 className="text-3xl font-bold font-display mt-1">₹84,250.00</h2>
-          <p className="text-muted-foreground text-xs mt-1">≈ $1,010.00 USD</p>
+          <h2 className="text-3xl font-bold font-display mt-1">₹{(user?.balance ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h2>
+          <p className="text-muted-foreground text-xs mt-1">≈ ${((user?.balance ?? 0) / 83).toFixed(2)} USD</p>
         </motion.div>
 
         {/* Quick Actions */}
@@ -111,6 +177,9 @@ const Dashboard = () => {
           </div>
         </motion.div>
 
+        {/* Global Transfer Map Visualization */}
+        <GlobalTransferMap transactions={transactions} />
+
         {/* Recent Transactions */}
         <motion.div variants={fadeUp} className="glass-card p-4">
           <div className="flex items-center justify-between mb-3">
@@ -120,8 +189,19 @@ const Dashboard = () => {
             </Button>
           </div>
           <div className="space-y-3">
-            {transactions.map((tx) => (
-              <div key={tx.id} className="flex items-center justify-between">
+            {loadingTransactions ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading transactions...
+              </div>
+            ) : null}
+
+            {!loadingTransactions && recentTransactions.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No transactions yet.</p>
+            ) : null}
+
+            {recentTransactions.map((tx, index) => (
+              <div key={tx._id ?? tx.id ?? tx.createdAt ?? `tx-${index}`} className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
                     tx.type === "in" ? "bg-success/15" : "bg-primary/15"
@@ -133,12 +213,18 @@ const Dashboard = () => {
                     )}
                   </div>
                   <div>
-                    <p className="text-sm font-medium">{tx.type === "in" ? tx.sender : tx.receiver}</p>
-                    <p className="text-xs text-muted-foreground">{tx.status}</p>
+                    <p className="text-sm font-medium">{tx.displayName}</p>
+                    <p className="text-xs text-muted-foreground">{tx.statusText}</p>
+                    {tx.blockchainHash ? (
+                      <p className="text-[11px] text-secondary flex items-center gap-1 mt-0.5">
+                        <Link2 className="w-3 h-3" />
+                        Recorded on Blockchain: {shortHash(tx.blockchainHash)}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
                 <span className={`text-sm font-semibold ${tx.type === "in" ? "text-success" : ""}`}>
-                  {tx.type === "in" ? "+" : "-"}{tx.amount}
+                  {tx.type === "in" ? "+" : "-"}{tx.amountText}
                 </span>
               </div>
             ))}

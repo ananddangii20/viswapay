@@ -1,11 +1,73 @@
+import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, Shield, CheckCircle, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import AIFraudHeatmap from "@/components/AIFraudHeatmap";
+
+interface FraudReason {
+  type: string;
+  severity: "low" | "medium" | "high";
+  description: string;
+}
 
 const FraudAnalysis = () => {
   const navigate = useNavigate();
-  const riskScore = 18;
+  
+  // Simulate fraud score generation (in real app, this would come from backend)
+  const [fraudData] = useState(() => {
+    const score = Math.floor(Math.random() * 100);
+    const level = score < 30 ? "LOW" : score < 70 ? "MEDIUM" : "HIGH";
+    
+    const reasonsList: FraudReason[] = [];
+    
+    // Simulate different reasons based on score
+    if (score > 40) {
+      reasonsList.push({
+        type: "High Transfer Amount",
+        severity: score > 70 ? "high" : "medium",
+        description: "Transaction exceeds usual spending pattern"
+      });
+    }
+    
+    if (score > 50) {
+      reasonsList.push({
+        type: "New Recipient",
+        severity: "medium",
+        description: "First time sending to this recipient"
+      });
+    }
+    
+    if (score > 60) {
+      reasonsList.push({
+        type: "Cross-border Unusual Amount",
+        severity: "medium",
+        description: "International transfer with atypical value"
+      });
+    }
+    
+    if (score > 75) {
+      reasonsList.push({
+        type: "High Transfer Frequency",
+        severity: "high",
+        description: "Multiple large transactions detected"
+      });
+    }
+    
+    return {
+      score,
+      level,
+      reasons: reasonsList.length > 0 ? reasonsList : [
+        {
+          type: "All Checks Passed",
+          severity: "low",
+          description: "Transaction meets all security criteria"
+        }
+      ]
+    };
+  });
+
+  const riskScore = fraudData.score;
   const isSafe = riskScore < 50;
 
   return (
@@ -22,7 +84,14 @@ const FraudAnalysis = () => {
         animate={{ opacity: 1, y: 0 }}
         className="px-4 space-y-4"
       >
-        {/* Risk Score */}
+        {/* AI Fraud Heatmap */}
+        <AIFraudHeatmap 
+          score={fraudData.score} 
+          reasons={fraudData.reasons}
+          level={fraudData.level as "LOW" | "MEDIUM" | "HIGH"}
+        />
+
+        {/* Original Risk Score Section */}
         <div className="glass-card p-6 flex flex-col items-center glow-green">
           <Shield className={`w-12 h-12 mb-3 ${isSafe ? "text-success" : "text-destructive"}`} />
           <p className="text-sm text-muted-foreground mb-2">Transaction Risk Score</p>
@@ -67,14 +136,33 @@ const FraudAnalysis = () => {
         <div className="glass-card p-4 space-y-3">
           <h3 className="text-sm font-semibold">Analysis Details</h3>
           {[
-            { label: "Location Match", value: "✓ Normal", safe: true },
-            { label: "Amount Pattern", value: "✓ Within range", safe: true },
-            { label: "Device Trust", value: "✓ Known device", safe: true },
-            { label: "Receiver History", value: "✓ Verified user", safe: true },
+            { 
+              label: "Risk Level", 
+              value: fraudData.level, 
+              safe: fraudData.level === "LOW",
+              display: fraudData.level === "LOW" ? "✓ Low Risk" : fraudData.level === "MEDIUM" ? "⚡ Medium Risk" : "⚠️ High Risk"
+            },
+            { 
+              label: "Detection Model", 
+              value: "✓ AI Verified", 
+              safe: true 
+            },
+            { 
+              label: "Device Trust", 
+              value: "✓ Known device", 
+              safe: true 
+            },
+            { 
+              label: "Security Status", 
+              value: isSafe ? "✓ Approved" : "✓ Review Recommended", 
+              safe: isSafe 
+            },
           ].map((item) => (
             <div key={item.label} className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">{item.label}</span>
-              <span className={item.safe ? "text-success" : "text-destructive"}>{item.value}</span>
+              <span className={item.safe ? "text-success" : item.label === "Risk Level" && fraudData.level === "MEDIUM" ? "text-warning" : "text-destructive"}>
+                {item.label === "Risk Level" ? item.display : item.value}
+              </span>
             </div>
           ))}
         </div>

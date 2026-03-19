@@ -1,18 +1,62 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Link2, Shield } from "lucide-react";
+import { ArrowLeft, Link2, Loader2, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/context/AuthContext";
+import api from "@/lib/axios";
+import { toast } from "sonner";
 
-const ledgerData = [
-  { id: "VSP-TX-928471", sender: "Arjun P.", receiver: "Alice J.", amount: "$12.00", hash: "0x7a3f...b82e" },
-  { id: "VSP-TX-817362", sender: "Bob K.", receiver: "Arjun P.", amount: "£120.00", hash: "0x9c2d...f41a" },
-  { id: "VSP-TX-706253", sender: "Arjun P.", receiver: "Chen W.", amount: "¥800.00", hash: "0x1e8b...d73c" },
-  { id: "VSP-TX-695144", sender: "Maria S.", receiver: "Arjun P.", amount: "R$200.00", hash: "0x4f6a...e92b" },
-  { id: "VSP-TX-584035", sender: "Arjun P.", receiver: "Yuki T.", amount: "¥1,500", hash: "0x2b7c...a15d" },
-];
+interface TransactionHistoryItem {
+  _id?: string;
+  receiverEmail?: string;
+  amount?: number;
+  currency?: string;
+  status?: string;
+  blockchainHash?: string;
+  createdAt?: string;
+}
+
+const shortHash = (hash?: string) => {
+  if (!hash) return "--";
+  if (hash.length <= 14) return hash;
+  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
+};
 
 const BlockchainLedger = () => {
   const navigate = useNavigate();
+  const { token } = useAuth();
+  const [ledgerData, setLedgerData] = useState<TransactionHistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchHistory = async () => {
+      setLoading(true);
+
+      try {
+        const response = await api.get("/payment/history", {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : "",
+          },
+        });
+
+        const history = Array.isArray(response.data)
+          ? response.data
+          : Array.isArray((response.data as { transactions?: unknown[] })?.transactions)
+            ? (response.data as { transactions: TransactionHistoryItem[] }).transactions
+            : [];
+
+        setLedgerData(history);
+      } catch {
+        setLedgerData([]);
+        toast.error("Failed to fetch transaction history");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void fetchHistory();
+  }, [token]);
 
   return (
     <div className="min-h-screen pb-8">
@@ -36,24 +80,41 @@ const BlockchainLedger = () => {
 
         {/* Ledger entries */}
         <div className="space-y-3">
+          {loading ? (
+            <div className="glass-card p-4 text-sm text-muted-foreground flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Loading history...
+            </div>
+          ) : null}
+
+          {!loading && ledgerData.length === 0 ? (
+            <div className="glass-card p-4 text-sm text-muted-foreground">No transaction history available.</div>
+          ) : null}
+
           {ledgerData.map((tx, i) => (
             <motion.div
-              key={tx.id}
+              key={tx._id ?? `${tx.receiverEmail}-${tx.createdAt}-${i}`}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.08 }}
               className="glass-card p-4 space-y-2"
             >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-mono text-primary">{tx.id}</span>
-                <span className="text-sm font-bold">{tx.amount}</span>
+                <span className="text-xs font-mono text-primary">{tx._id ?? "--"}</span>
+                <span className="text-sm font-bold">
+                  {(tx.currency ?? "USD").toUpperCase()} {Number(tx.amount ?? 0).toFixed(2)}
+                </span>
               </div>
               <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>{tx.sender} → {tx.receiver}</span>
+                <span>Receiver: {tx.receiverEmail ?? "--"}</span>
+                <span>Status: {tx.status ?? "PENDING"}</span>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Date: {tx.createdAt ? new Date(tx.createdAt).toLocaleString() : "--"}
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 <Link2 className="w-3 h-3 text-secondary" />
-                <span className="font-mono text-muted-foreground">{tx.hash}</span>
+                <span className="font-mono text-muted-foreground">{shortHash(tx.blockchainHash)}</span>
               </div>
             </motion.div>
           ))}

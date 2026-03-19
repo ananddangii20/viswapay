@@ -1,33 +1,53 @@
-const User = require("../models/User");
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 
-exports.register = async (req, res) => {
-  const { name, email, password } = req.body;
+const transactionSchema = new mongoose.Schema(
+  {
+    sender: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true
+    },
+    senderCountry: {
+      type: String,
+      default: "India"
+    },
+    receiverEmail: {
+      type: String,
+      required: true
+    },
+    receiverCountry: {
+      type: String,
+      default: "USA"
+    },
+    amount: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    currency: {
+      type: String,
+      default: "USD",
+      enum: ["USD", "EUR", "GBP", "AED", "INR"]
+    },
+    bankName: String,
+    exchangeRate: Number,
+    convertedAmount: Number,
+    fraudScore: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
+    },
+    blockchainHash: String,
+    status: {
+      type: String,
+      enum: ["PENDING", "SUCCESS", "FAILED"],
+      default: "PENDING"
+    },
+    description: String,
+    createdAt: { type: Date, default: Date.now }
+  },
+  { timestamps: true }
+);
 
-  const hashed = await bcrypt.hash(password, 10);
-
-  const user = await User.create({
-    name,
-    email,
-    password: hashed
-  });
-
-  res.json(user);
-};
-
-exports.login = async (req, res) => {
-  const { email, password } = req.body;
-
-  const user = await User.findOne({ email });
-
-  if (!user) return res.status(400).json("User not found");
-
-  const match = await bcrypt.compare(password, user.password);
-
-  if (!match) return res.status(400).json("Wrong password");
-
-  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
-
-  res.json({ token });
-};
+module.exports = mongoose.model("Transaction", transactionSchema);

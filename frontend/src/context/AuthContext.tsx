@@ -5,6 +5,7 @@ interface User {
   id?: string;
   name: string;
   email: string;
+  balance: number;   // ⭐ add this
 }
 
 interface AuthContextType {
@@ -54,7 +55,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const register = async (name: string, email: string, password: string) => {
-    await api.post("/auth/register", { name, email, password });
+    const response = await api.post("/auth/register", { name, email, password });
+    const { token: jwt, user: userData } = response.data;
+    setAuthSession(jwt, userData);
   };
 
   const logout = () => {

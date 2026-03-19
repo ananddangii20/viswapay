@@ -18,7 +18,7 @@ exports.register = async (req, res) => {
       name,
       email,
       password: hashed,
-      balance: 50000 // Default balance
+      balance: 1000 // Default initial wallet balance of ₹1000
     });
 
     // Generate token
@@ -63,7 +63,7 @@ exports.login = async (req, res) => {
     // Generate JWT token
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
 
-    // Return complete user data including balance
+    // Return complete user data including balance with fallback
     res.json({
       success: true,
       message: "Login successful",
@@ -72,7 +72,7 @@ exports.login = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        balance: user.balance
+        balance: user.balance || 1000
       }
     });
   } catch (error) {
@@ -101,7 +101,7 @@ exports.getProfile = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        balance: user.balance,
+        balance: user.balance || 1000,
         country: user.country,
         walletAddress: user.walletAddress
       }

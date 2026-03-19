@@ -111,60 +111,93 @@ exports.generateToken = async (req, res) => {
 exports.redeemToken = async (req, res) => {
   try {
     const { token } = req.body;
+    const userId = req.user.id;
 
-    // Validation
+    // Step 1: Validate token input
     if (!token || !token.trim()) {
-      return res.status(400).json({ message: "Token required" });
+      return res.status(400).json({ 
+        success: false,
+        message: "Token required",
+        errorType: "MISSING_TOKEN"
+      });
     }
 
-    // Find token in database
+    // Step 2: Find and validate token existence (Token Matching Phase)
     const offlineToken = await OfflineToken.findOne({ token: token.trim() });
     
     if (!offlineToken) {
-      return res.status(404).json({ message: "Invalid or expired token" });
+      return res.status(404).json({ 
+        success: false,
+        message: "Token not found - Invalid token code provided",
+        errorType: "TOKEN_MISMATCH"
+      });
     }
 
-    // Check if token is expired
+    // Step 3: Explicit token matching success confirmation
+    console.log(`[Offline Token] Token matched successfully: ${offlineToken.token}`);
+
+    // Step 4: Validate token expiry
     if (new Date() > offlineToken.expiry) {
       offlineToken.status = "EXPIRED";
       await offlineToken.save();
       return res.status(400).json({ 
-        message: "Token expired",
+        success: false,
+        message: "Token has expired - Please generate a new offline token",
+        errorType: "TOKEN_EXPIRED",
         expiry: offlineToken.expiry
       });
     }
 
-    // Check if already used
+    // Step 5: Check if already used (prevent double-spend)
     if (offlineToken.status === "COMPLETED" || offlineToken.isUsed) {
       return res.status(400).json({ 
-        message: "Token already used",
+        success: false,
+        message: "Token already redeemed - Cannot use the same token twice",
+        errorType: "TOKEN_ALREADY_USED",
         redeemedAt: offlineToken.redeemedAt
       });
     }
 
-    // Get sender and receiver
+    // Step 6: Validate users exist
     const sender = await User.findById(offlineToken.sender);
     const receiver = await User.findOne({ email: offlineToken.receiverEmail });
 
     if (!sender || !receiver) {
-      return res.status(404).json({ message: "Sender or receiver not found" });
-    }
-
-    // Double-check balance (security measure)
-    if (sender.balance < offlineToken.amount) {
-      return res.status(403).json({ 
-        message: "Insufficient balance at redemption time" 
+      return res.status(404).json({ 
+        success: false,
+        message: "Sender or receiver account not found",
+        errorType: "USER_NOT_FOUND"
       });
     }
 
-    // Process payment - deduct from sender, add to receiver
+    // Step 7: Verify receiver is the current user attempting redemption
+    if (receiver._id.toString() !== userId) {
+      return res.status(403).json({ 
+        success: false,
+        message: "You are not the intended receiver of this token",
+        errorType: "UNAUTHORIZED_RECEIVER"
+      });
+    }
+
+    // Step 8: Final balance validation (security measure)
+    if (sender.balance < offlineToken.amount) {
+      return res.status(403).json({ 
+        success: false,
+        message: "Sender has insufficient balance - Cannot complete transaction",
+        errorType: "INSUFFICIENT_BALANCE",
+        requiredAmount: offlineToken.amount,
+        availableBalance: sender.balance
+      });
+    }
+
+    // Step 9: Process payment - deduct from sender, add to receiver
     sender.balance -= offlineToken.amount;
     receiver.balance += offlineToken.amount;
 
     await sender.save();
     await receiver.save();
 
-    // Generate blockchain hash for immutability verification
+    // Step 10: Generate blockchain hash for immutability verification
     const blockchainHash = await recordOnBlockchain(
       sender.email,
       receiver.email,
@@ -172,7 +205,7 @@ exports.redeemToken = async (req, res) => {
       new Date().toISOString()
     );
 
-    // Update token status and record redemption
+    // Step 11: Update token status and record redemption
     offlineToken.status = "COMPLETED";
     offlineToken.isUsed = true;
     offlineToken.blockchainHash = blockchainHash;
@@ -181,9 +214,10 @@ exports.redeemToken = async (req, res) => {
 
     await offlineToken.save();
 
-    // Create transaction record for audit trail
+    // Step 12: Create transaction record for audit trail
     const transaction = await Transaction.create({
       sender: sender._id,
+      receiver: receiver._id,
       senderCountry: sender.country || "India",
       receiverEmail: receiver.email,
       receiverCountry: receiver.country || "USA",
@@ -195,24 +229,31 @@ exports.redeemToken = async (req, res) => {
       fraudScore: 0, // Offline tokens bypass fraud detection
       blockchainHash,
       status: "SUCCESS",
+      mode: "OFFLINE_TOKEN",  // Audit trail: mark as offline token payment
       description: `Offline token payment from ${sender.name} to ${receiver.name}`
     });
 
     console.log(
-      `[Offline Token] Redeemed: ${offlineToken.token} | Hash: ${blockchainHash}`
+      `[Offline Token] Redeemed successfully: ${offlineToken.token} | Hash: ${blockchainHash} | Receiver: ${receiver.email}`
     );
 
+    // Step 13: Return success response with explicit confirmation
     res.json({
       success: true,
-      message: "Payment completed successfully",
+      message: "Token matched successfully! Payment completed and secured on blockchain.",
+      tokenMatched: true,
+      senderBalance: sender.balance,
+      receiverBalance: receiver.balance,
       data: {
         transactionId: transaction._id,
         blockchainHash,
         amount: offlineToken.amount,
         currency: offlineToken.currency,
         receiver: receiver.name,
+        sender: sender.name,
         timestamp: new Date().toISOString(),
-        status: "SUCCESS"
+        status: "SUCCESS",
+        mode: "OFFLINE_TOKEN"
       }
     });
 
@@ -220,7 +261,8 @@ exports.redeemToken = async (req, res) => {
     console.error("Token redemption error:", error);
     res.status(500).json({ 
       success: false,
-      message: "Token verification failed" 
+      message: "Token verification failed - Please try again",
+      errorType: "SERVER_ERROR"
     });
   }
 };

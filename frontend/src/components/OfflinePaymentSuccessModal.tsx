@@ -81,11 +81,11 @@ export const OfflinePaymentSuccessModal = ({
                 transition={{ delay: 0.3 }}
                 className="text-center"
               >
-                <h2 className="text-2xl font-bold font-display text-foreground mb-1">
-                  Payment Successful!
+                <h2 className="text-2xl font-bold font-display text-success mb-2">
+                  ✨ Token Matched Successfully!
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  Your offline payment has been processed
+                  Your offline payment has been processed and secured on the blockchain
                 </p>
               </motion.div>
 

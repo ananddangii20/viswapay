@@ -5,7 +5,11 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    balance: { type: Number, default: 50000 },
+    balance: {
+      type: Number,
+      default: 1000,
+      description: "Default initial wallet balance of ₹1000 for all new users"
+    },
     walletAddress: String,
     country: String,
     createdAt: { type: Date, default: Date.now },

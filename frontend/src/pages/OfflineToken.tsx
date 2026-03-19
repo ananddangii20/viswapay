@@ -39,7 +39,7 @@ interface PendingRedeem {
 
 const OfflineToken = () => {
   const navigate = useNavigate();
-  const { token: authToken } = useAuth();
+  const { token: authToken, user, setAuthSession } = useAuth();
 
   // UI State
   const [receiverEmail, setReceiverEmail] = useState("");
@@ -212,40 +212,78 @@ const OfflineToken = () => {
         );
       }
 
-      const data = response.data?.data || response.data;
+      const responseData = response.data;
+      const data = responseData?.data || response.data;
 
-      // Show success with blockchain hash
-      setSuccessData({
-        transactionId: data.transactionId || data.id,
-        blockchainHash: data.blockchainHash,
-        amount: data.amount,
-        currency: data.currency,
-        receiver: data.receiver,
-        timestamp: new Date().toISOString()
-      });
+      // Verify token matched successfully
+      if (responseData?.tokenMatched === true || responseData?.success === true) {
+        // Update user balance in AuthContext if we're the receiver
+        if (user && responseData?.receiverBalance !== undefined) {
+          const updatedUser = { ...user, balance: responseData.receiverBalance };
+          setAuthSession(authToken!, updatedUser);
+        }
 
-      setShowSuccessModal(true);
-      toast.success("Payment redeemed successfully! 🎉");
+        // Show success with blockchain hash
+        setSuccessData({
+          transactionId: data.transactionId || data.id,
+          blockchainHash: data.blockchainHash,
+          amount: data.amount,
+          currency: data.currency,
+          receiver: data.receiver,
+          timestamp: new Date().toISOString()
+        });
 
-      // Reset form after short delay
-      setTimeout(() => {
-        setGeneratedToken(null);
-        setManualToken("");
-        setReceiverEmail("");
-        setAmount("1000");
-      }, 2000);
+        setShowSuccessModal(true);
+        toast.success("Token matched successfully! Payment secured on blockchain 🎉");
+
+        // Reset form after short delay
+        setTimeout(() => {
+          setGeneratedToken(null);
+          setManualToken("");
+          setReceiverEmail("");
+          setAmount("1000");
+        }, 2000);
+      }
     } catch (error) {
-      const errorMsg =
-        (error as { response?: { data?: { message?: string } } })?.response?.data?.message || "Token verification failed";
+      const errorResponse = (error as { response?: { data?: any } })?.response?.data;
+      const errorMsg = errorResponse?.message || "Token verification failed";
+      const errorType = errorResponse?.errorType;
+
+      // Provide differentiated error messages based on error type
+      const errorDetails = getErrorDetails(errorType, errorMsg);
 
       if (!isOnline) {
         toast.error("You are offline. Payment queued for later.");
         savePendingRedeem(tokenToVerify);
       } else {
-        toast.error(errorMsg);
+        // Show detailed error with appropriate emotion
+        toast.error(errorDetails);
       }
     } finally {
       setIsVerifying(false);
+    }
+  };
+
+  const getErrorDetails = (errorType: string | undefined, fallback: string): string => {
+    switch (errorType) {
+      case "TOKEN_MISMATCH":
+        return "❌ Token not found - Check the code and try again";
+      case "TOKEN_EXPIRED":
+        return "⏰ Token has expired - Please generate a new one";
+      case "TOKEN_ALREADY_USED":
+        return "🔄 Token already redeemed - Cannot use twice";
+      case "INSUFFICIENT_BALANCE":
+        return "💸 Sender has insufficient balance - Transaction cannot be completed";
+      case "UNAUTHORIZED_RECEIVER":
+        return "🚫 You are not the intended receiver of this token";
+      case "USER_NOT_FOUND":
+        return "👤 User account not found";
+      case "MISSING_TOKEN":
+        return "📝 Please enter a token code";
+      case "SERVER_ERROR":
+        return "⚠️ Server error - Please try again later";
+      default:
+        return fallback;
     }
   };
 

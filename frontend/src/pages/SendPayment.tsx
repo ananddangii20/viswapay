@@ -98,7 +98,7 @@ const normalizeBankRates = (rawData: unknown): BankRate[] => {
 
 const SendPayment = () => {
   const navigate = useNavigate();
-  const { token } = useAuth();
+  const { token, user, setAuthSession } = useAuth();
   const [receiverEmail, setReceiverEmail] = useState("");
   const [amount, setAmount] = useState("1000");
   const [selectedCurrency, setSelectedCurrency] = useState("USD");
@@ -251,7 +251,7 @@ const SendPayment = () => {
     try {
       setSending(true);
 
-      await api.post(
+      const response = await api.post(
         "/payment/send",
         {
           receiverEmail: receiverEmail.trim(),
@@ -263,6 +263,14 @@ const SendPayment = () => {
           headers: authHeaders,
         },
       );
+
+      // Update wallet balance in AuthContext immediately ✅
+      const { senderBalance } = response.data;
+      if (senderBalance !== undefined && user) {
+        // Update user balance in context
+        const updatedUser = { ...user, balance: senderBalance };
+        setAuthSession(token!, updatedUser);
+      }
 
       toast.success("Payment sent successfully");
       setShowBankModal(false);

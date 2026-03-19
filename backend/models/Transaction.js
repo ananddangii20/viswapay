@@ -7,6 +7,11 @@ const transactionSchema = new mongoose.Schema(
       ref: "User",
       required: true
     },
+    receiver: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: false  // For transactions where receiver is found
+    },
     senderCountry: {
       type: String,
       default: "India"
@@ -44,10 +49,19 @@ const transactionSchema = new mongoose.Schema(
       enum: ["PENDING", "SUCCESS", "FAILED"],
       default: "PENDING"
     },
+    mode: {
+      type: String,
+      enum: ["DIRECT", "OFFLINE_TOKEN", "QR", "BANK_TRANSFER"],
+      default: "DIRECT"
+    },
     description: String,
     createdAt: { type: Date, default: Date.now }
   },
   { timestamps: true }
 );
+
+// Index for efficient querying
+transactionSchema.index({ sender: 1, createdAt: -1 });
+transactionSchema.index({ receiver: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Transaction", transactionSchema);

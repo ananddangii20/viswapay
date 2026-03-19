@@ -87,6 +87,7 @@ exports.sendPayment = async (req, res) => {
     // Create transaction record
     const transaction = await Transaction.create({
       sender: sender._id,
+      receiver: receiver._id,  // Add receiver userId for transaction history queries
       senderCountry: sender.country || "India",
       receiverEmail: receiver.email,
       receiverCountry: receiver.country || "USA",
@@ -98,11 +99,15 @@ exports.sendPayment = async (req, res) => {
       fraudScore: fraudCheck.score,
       blockchainHash,
       status: "SUCCESS",
-      description: `Payment from ${sender.name} to ${receiver.email}`
+      description: `Payment from ${sender.name} to ${receiver.name}`
     });
 
+    // Return success with updated balances
     res.status(201).json({
+      success: true,
       message: "Payment sent successfully",
+      senderBalance: sender.balance,  // Real updated balance
+      receiverBalance: receiver.balance,  // Real updated balance
       transaction: {
         id: transaction._id,
         sender: sender.email,
@@ -126,36 +131,57 @@ exports.sendPayment = async (req, res) => {
 
 /**
  * GET /api/payment/history
- * Get transaction history for logged-in user
+ * Get transaction history for logged-in user (both sent and received)
  */
 exports.getHistory = async (req, res) => {
   try {
-    const transactions = await Transaction.find({
-      sender: req.user.id
-    })
-      .sort({ createdAt: -1 })
-      .limit(50);
+    const userId = req.user.id;
 
-    res.json({
-      count: transactions.length,
-      transactions: transactions.map(tx => ({
+    // Find all transactions where user is sender OR receiver
+    const transactions = await Transaction.find({
+      $or: [
+        { sender: userId },     // Sent transactions
+        { receiver: userId }    // Received transactions
+      ]
+    })
+      .sort({ createdAt: -1 })  // Latest first
+      .limit(50)
+      .lean();  // More efficient query
+
+    // Format transactions to include direction badge logic
+    const formattedTransactions = transactions.map((tx) => {
+      const isOutgoing = tx.sender.toString() === userId;
+      
+      return {
+        _id: tx._id,
         id: tx._id,
+        sender: tx.sender,
+        receiver: tx.receiver,
         receiverEmail: tx.receiverEmail,
         amount: tx.amount,
         currency: tx.currency,
+        bankName: tx.bankName,
         status: tx.status,
         blockchainHash: tx.blockchainHash,
-        bankName: tx.bankName,
         convertedAmount: tx.convertedAmount,
         senderCountry: tx.senderCountry,
         receiverCountry: tx.receiverCountry,
-        createdAt: tx.createdAt
-      }))
+        createdAt: tx.createdAt,
+        type: isOutgoing ? "out" : "in",  // Direction badge
+        direction: isOutgoing ? "Sent" : "Received",  // UI label
+        displayName: isOutgoing ? tx.receiverEmail : tx.sender  // Change based on direction
+      };
+    });
+
+    res.json({
+      success: true,
+      count: formattedTransactions.length,
+      transactions: formattedTransactions
     });
 
   } catch (error) {
     console.error("History error:", error);
-    res.status(500).json({ message: "Failed to fetch history" });
+    res.status(500).json({ success: false, message: "Failed to fetch history" });
   }
 };
 

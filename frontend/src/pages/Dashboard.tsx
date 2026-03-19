@@ -24,6 +24,9 @@ interface TransactionHistoryItem {
   bankName?: string;
   status?: string;
   blockchainHash?: string;
+  type?: "in" | "out";  // Direction badge from backend
+  direction?: "Sent" | "Received";  // Display label
+  displayName?: string;  // Pre-formatted display name
   createdAt?: string;
 }
 
@@ -85,13 +88,18 @@ const Dashboard = () => {
   const recentTransactions = useMemo(
     () =>
       transactions.map((tx) => {
-        const isOutgoing = true;
+        // Use direction from backend, fallback to determining based on type field
+        const isOutgoing = tx.type === "out" || tx.direction === "Sent";
         const amount = Number(tx.amount ?? 0);
+        
         return {
           ...tx,
           type: isOutgoing ? "out" : "in",
           amountText: `${(tx.currency ?? "USD").toUpperCase()} ${amount.toFixed(2)}`,
-          displayName: tx.receiverEmail ?? tx.receiver ?? "Unknown receiver",
+          // Show receiver for outgoing, show sender for incoming
+          displayName: isOutgoing 
+            ? (tx.displayName ?? tx.receiverEmail ?? "Unknown receiver")
+            : (tx.displayName ?? tx.sender ?? "Unknown sender"),
           statusText: (tx.status ?? "PENDING").toString(),
         };
       }),
@@ -213,7 +221,16 @@ const Dashboard = () => {
                     )}
                   </div>
                   <div>
-                    <p className="text-sm font-medium">{tx.displayName}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium">{tx.displayName}</p>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+                        tx.type === "in" 
+                          ? "bg-success/20 text-success"
+                          : "bg-primary/20 text-primary"
+                      }`}>
+                        {tx.type === "in" ? "Received" : "Sent"}
+                      </span>
+                    </div>
                     <p className="text-xs text-muted-foreground">{tx.statusText}</p>
                     {tx.blockchainHash ? (
                       <p className="text-[11px] text-secondary flex items-center gap-1 mt-0.5">

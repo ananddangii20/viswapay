@@ -439,6 +439,3 @@ const QRPayment = () => {
 };
 
 export default QRPayment;
-};
-
-export default QRPayment;

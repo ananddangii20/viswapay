@@ -9,11 +9,15 @@ import { toast } from "sonner";
 
 interface TransactionHistoryItem {
   _id?: string;
+  sender?: string;
+  receiver?: string;
   receiverEmail?: string;
   amount?: number;
   currency?: string;
   status?: string;
   blockchainHash?: string;
+  type?: "in" | "out";
+  direction?: "Sent" | "Received";
   createdAt?: string;
 }
 
@@ -101,8 +105,12 @@ const BlockchainLedger = () => {
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-mono text-primary">{tx._id ?? "--"}</span>
-                <span className="text-sm font-bold">
-                  {(tx.currency ?? "USD").toUpperCase()} {Number(tx.amount ?? 0).toFixed(2)}
+                <span className={`text-sm font-bold ${
+                  tx.type === "in" 
+                    ? "text-success" 
+                    : "text-destructive"
+                }`}>
+                  {tx.type === "in" ? "+" : "-"}{(tx.currency ?? "USD").toUpperCase()} {Number(tx.amount ?? 0).toFixed(2)}
                 </span>
               </div>
               <div className="flex items-center justify-between text-xs text-muted-foreground">

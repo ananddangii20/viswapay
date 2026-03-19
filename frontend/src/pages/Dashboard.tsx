@@ -240,7 +240,11 @@ const Dashboard = () => {
                     ) : null}
                   </div>
                 </div>
-                <span className={`text-sm font-semibold ${tx.type === "in" ? "text-success" : ""}`}>
+                <span className={`text-sm font-semibold ${
+                  tx.type === "in" 
+                    ? "text-success" 
+                    : "text-destructive"
+                }`}>
                   {tx.type === "in" ? "+" : "-"}{tx.amountText}
                 </span>
               </div>

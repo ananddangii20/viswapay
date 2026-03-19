@@ -7,7 +7,9 @@ const {
   verifyToken,
   getBankRatesHandler,
   fraudCheck,
-  convertCurrency
+  convertCurrency,
+  generateQRCode,
+  processQRPayment
 } = require("../controllers/paymentController");
 const authMiddleware = require("../middleware/authMiddleware");
 
@@ -20,6 +22,10 @@ router.get("/history", authMiddleware, getHistory);
 // Offline token management
 router.post("/generate-token", authMiddleware, generateToken);
 router.post("/verify-token", authMiddleware, verifyToken);
+
+// QR Payment
+router.post("/qr-generate", authMiddleware, generateQRCode);
+router.post("/qr-pay", authMiddleware, processQRPayment);
 
 // Bank rates comparison
 router.get("/bank-rates", authMiddleware, getBankRatesHandler);

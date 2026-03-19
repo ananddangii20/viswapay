@@ -4,6 +4,7 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const { recordOnBlockchain } = require("../services/blockchainService");
 const { convert } = require("../services/currencyService");
+const { processPayment } = require("../services/paymentService");
 
 /**
  * POST /api/token/generate
@@ -190,51 +191,28 @@ exports.redeemToken = async (req, res) => {
       });
     }
 
-    // Step 9: Process payment - deduct from sender, add to receiver
-    sender.balance -= offlineToken.amount;
-    receiver.balance += offlineToken.amount;
-
-    await sender.save();
-    await receiver.save();
-
-    // Step 10: Generate blockchain hash for immutability verification
-    const blockchainHash = await recordOnBlockchain(
-      sender.email,
-      receiver.email,
-      offlineToken.amount,
-      new Date().toISOString()
-    );
-
-    // Step 11: Update token status and record redemption
-    offlineToken.status = "COMPLETED";
-    offlineToken.isUsed = true;
-    offlineToken.blockchainHash = blockchainHash;
-    offlineToken.redeemedAt = new Date();
-    offlineToken.redeemedBy = receiver._id;
-
-    await offlineToken.save();
-
-    // Step 12: Create transaction record for audit trail
-    const transaction = await Transaction.create({
-      sender: sender._id,
-      receiver: receiver._id,
-      senderCountry: sender.country || "India",
+    // ✅ Step 9-12: USE UNIFIED PAYMENT ENGINE (atomic transaction)
+    // This ensures sender deduction and receiver addition happen together
+    const paymentResult = await processPayment({
+      senderId: sender._id.toString(),
       receiverEmail: receiver.email,
-      receiverCountry: receiver.country || "USA",
       amount: offlineToken.amount,
       currency: offlineToken.currency,
+      type: "OFFLINE",
       bankName: offlineToken.bankName,
-      exchangeRate: 1, // 1:1 for offline tokens
-      convertedAmount: offlineToken.amount,
-      fraudScore: 0, // Offline tokens bypass fraud detection
-      blockchainHash,
-      status: "SUCCESS",
-      mode: "OFFLINE_TOKEN",  // Audit trail: mark as offline token payment
-      description: `Offline token payment from ${sender.name} to ${receiver.name}`
+      skipFraudCheck: true  // Offline tokens already validated
     });
 
+    // Update offline token status after successful payment
+    offlineToken.status = "COMPLETED";
+    offlineToken.isUsed = true;
+    offlineToken.blockchainHash = paymentResult.transaction.blockchainHash;
+    offlineToken.redeemedAt = new Date();
+    offlineToken.redeemedBy = receiver._id;
+    await offlineToken.save();
+
     console.log(
-      `[Offline Token] Redeemed successfully: ${offlineToken.token} | Hash: ${blockchainHash} | Receiver: ${receiver.email}`
+      `[Offline Token] Redeemed successfully: ${offlineToken.token} | Hash: ${paymentResult.transaction.blockchainHash} | Receiver: ${receiver.email}`
     );
 
     // Step 13: Return success response with explicit confirmation
@@ -242,13 +220,13 @@ exports.redeemToken = async (req, res) => {
       success: true,
       message: "Token matched successfully! Payment completed and secured on blockchain.",
       tokenMatched: true,
-      senderBalance: sender.balance,
-      receiverBalance: receiver.balance,
+      senderBalance: paymentResult.senderBalance,
+      receiverBalance: paymentResult.receiverBalance,
       data: {
-        transactionId: transaction._id,
-        blockchainHash,
-        amount: offlineToken.amount,
-        currency: offlineToken.currency,
+        transactionId: paymentResult.transaction.id,
+        blockchainHash: paymentResult.transaction.blockchainHash,
+        amount: paymentResult.transaction.amount,
+        currency: paymentResult.transaction.currency,
         receiver: receiver.name,
         sender: sender.name,
         timestamp: new Date().toISOString(),
@@ -259,9 +237,22 @@ exports.redeemToken = async (req, res) => {
 
   } catch (error) {
     console.error("Token redemption error:", error);
+    
+    // Roll back offline token status if payment failed
+    try {
+      const offlineToken = await OfflineToken.findOne({ token: req.body.token?.trim() });
+      if (offlineToken && offlineToken.status !== "PENDING") {
+        offlineToken.status = "PENDING";  // Reset status
+        offlineToken.isUsed = false;
+        await offlineToken.save();
+      }
+    } catch (rollbackError) {
+      console.error("Failed to rollback token status:", rollbackError);
+    }
+    
     res.status(500).json({ 
       success: false,
-      message: "Token verification failed - Please try again",
+      message: error.message || "Token verification failed - Please try again",
       errorType: "SERVER_ERROR"
     });
   }

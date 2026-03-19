@@ -6,6 +6,12 @@ const { recordOnBlockchain } = require("../services/blockchainService");
 const { checkFraud } = require("../services/fraudService");
 const { convert } = require("../services/currencyService");
 const { getBankRates } = require("../services/bankRateService");
+const {
+  processPayment,
+  getFraudCheck,
+  convertCurrency: convertCurrencyAmount,
+  getBankRatesForAmount,
+} = require("../services/paymentService");
 const crypto = require("crypto");
 
 // QR Code generation (optional - graceful fallback if not installed)
@@ -20,54 +26,25 @@ try {
 /**
  * POST /api/payment/send
  * Send international payment with ATOMIC TRANSACTION
- * CRITICAL: Both wallets updated in single MongoDB session
+ * Uses unified payment engine
  */
 exports.sendPayment = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { receiverEmail, amount, currency = "USD", bankName } = req.body;
 
     // Validation
     if (!receiverEmail || !amount || amount <= 0) {
-      await session.abortTransaction();
       return res.status(400).json({
         success: false,
         message: "Invalid receiver email or amount"
       });
     }
 
-    // Get sender from JWT (uses session)
-    const sender = await User.findById(req.user.id).session(session);
-    if (!sender) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: "Sender not found" });
-    }
-
-    // Get receiver (uses session)
-    const receiver = await User.findOne({ email: receiverEmail }).session(session);
-    if (!receiver) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: "Receiver not found" });
-    }
-
-    // Check sender balance
-    if (sender.balance < amount) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: "Insufficient balance" });
-    }
-
-    // Fraud check (not in transaction - external read)
-    const isNewReceiver = !await Transaction.findOne({
-      sender: sender._id,
-      receiverEmail: receiverEmail
-    });
-    const fraudCheck = await checkFraud(amount, receiverEmail, isNewReceiver);
+    // Fraud check (before processing)
+    const fraudCheck = await getFraudCheck(amount, receiverEmail, req.user.id);
 
     // Block high-risk transactions (simulated - 30% chance for high risk)
     if (fraudCheck.level === "HIGH" && Math.random() > 0.7) {
-      await session.abortTransaction();
       return res.status(403).json({
         success: false,
         message: fraudCheck.message,
@@ -75,90 +52,37 @@ exports.sendPayment = async (req, res) => {
       });
     }
 
-    // Currency conversion
-    const conversion = convert(amount, currency);
-    const convertedAmount = conversion.convertedAmount;
+    // ✅ Process payment using unified engine
+    const result = await processPayment({
+      senderId: req.user.id,
+      receiverEmail,
+      amount,
+      currency,
+      bankName: bankName || "Unknown",
+      mode: "DIRECT",
+      description: `Direct payment`,
+      fraudScore: fraudCheck.score
+    });
 
-    // Get exchange rate from selected bank if provided
-    let exchangeRate = conversion.rate;
-    if (bankName) {
-      const rates = getBankRates(amount, currency);
-      const selectedBank = rates.find(b => b.bankName === bankName);
-      if (selectedBank) {
-        exchangeRate = selectedBank.exchangeRate;
-      }
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.message
+      });
     }
 
-    // ✅ ATOMIC UPDATE: Deduct from sender
-    sender.balance -= amount;
-    sender.updatedAt = new Date();
-    await sender.save({ session });
-
-    // ✅ ATOMIC UPDATE: Add to receiver
-    receiver.balance += convertedAmount;
-    receiver.updatedAt = new Date();
-    await receiver.save({ session });
-
-    // Generate blockchain hash
-    const blockchainHash = await recordOnBlockchain(
-      sender.email,
-      receiver.email,
-      amount,
-      new Date().toISOString()
-    );
-
-    // Create transaction record (within session)
-    const transaction = await Transaction.create(
-      [{
-        sender: sender._id,
-        receiver: receiver._id,
-        senderCountry: sender.country || "India",
-        receiverEmail: receiver.email,
-        receiverCountry: receiver.country || "USA",
-        amount,
-        currency,
-        bankName: bankName || "Unknown",
-        exchangeRate,
-        convertedAmount,
-        fraudScore: fraudCheck.score,
-        blockchainHash,
-        status: "SUCCESS",
-        mode: "DIRECT",
-        description: `Payment from ${sender.name} to ${receiver.name}`
-      }],
-      { session }
-    );
-
-    // ✅ Commit transaction
-    await session.commitTransaction();
-
-    // Return success with updated balances
+    // ✅ Return success with updated balances
     res.status(201).json({
       success: true,
       message: "Payment sent successfully ✓",
-      senderBalance: sender.balance,
-      receiverBalance: receiver.balance,
-      transaction: {
-        id: transaction[0]._id,
-        sender: sender.email,
-        senderCountry: sender.country || "India",
-        receiver: receiver.email,
-        receiverCountry: receiver.country || "USA",
-        amountSent: amount,
-        amountReceived: convertedAmount,
-        currency,
-        status: transaction[0].status,
-        blockchainHash,
-        timestamp: transaction[0].createdAt
-      }
+      senderBalance: result.senderBalance,
+      receiverBalance: result.receiverBalance,
+      transaction: result.transaction
     });
 
   } catch (error) {
-    await session.abortTransaction();
     console.error("Payment error:", error);
     res.status(500).json({ success: false, message: "Payment processing failed" });
-  } finally {
-    session.endSession();
   }
 };
 
@@ -274,154 +198,65 @@ exports.generateToken = async (req, res) => {
 /**
  * POST /api/payment/verify-token
  * Verify and redeem offline token with ATOMIC TRANSACTION
+ * Uses unified payment engine
  */
 exports.verifyToken = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { token } = req.body;
 
     if (!token) {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: "Token required" });
     }
 
     // Find token
     const offlineToken = await OfflineToken.findOne({ token });
     if (!offlineToken) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: "Invalid token" });
     }
 
     // Check expiry
     if (new Date() > offlineToken.expiry) {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: "Token expired" });
     }
 
     // Check if already used
     if (offlineToken.status === "COMPLETED") {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: "Token already used" });
     }
 
-    // Get sender and receiver (within session)
-    const sender = await User.findById(offlineToken.sender).session(session);
-    const receiver = await User.findOne({ email: offlineToken.receiverEmail }).session(session);
+    // ✅ Process payment using unified engine
+    const result = await processPayment({
+      senderId: offlineToken.sender,
+      receiverEmail: offlineToken.receiverEmail,
+      amount: offlineToken.amount,
+      currency: "INR",
+      bankName: offlineToken.bankName,
+      mode: "OFFLINE_TOKEN",
+      description: `Offline token payment`
+    });
 
-    if (!sender || !receiver) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: "Sender or receiver not found" });
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.message
+      });
     }
 
-    // Check balance
-    if (sender.balance < offlineToken.amount) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: "Insufficient balance" });
-    }
-
-    // ✅ ATOMIC UPDATE: Deduct from sender
-    sender.balance -= offlineToken.amount;
-    sender.updatedAt = new Date();
-    await sender.save({ session });
-
-    // ✅ ATOMIC UPDATE: Add to receiver
-    receiver.balance += offlineToken.amount;
-    receiver.updatedAt = new Date();
-    await receiver.save({ session });
-
-    // Generate blockchain hash
-    const blockchainHash = await recordOnBlockchain(
-      sender.email,
-      receiver.email,
-      offlineToken.amount,
-      new Date().toISOString()
-    );
-
-    // Update token status (within session)
+    // Mark token as completed
     offlineToken.status = "COMPLETED";
-    await OfflineToken.updateOne(
-      { _id: offlineToken._id },
-      { status: "COMPLETED" },
-      { session }
-    );
-
-    // ✅ Create transaction record (within session)
-    const transaction = await Transaction.create(
-      [{
-        sender: sender._id,
-        receiver: receiver._id,
-        senderCountry: sender.country || "India",
-        receiverEmail: receiver.email,
-        receiverCountry: receiver.country || "USA",
-        amount: offlineToken.amount,
-        currency: "INR",
-        bankName: offlineToken.bankName,
-        convertedAmount: offlineToken.amount,
-        blockchainHash,
-        status: "SUCCESS",
-        mode: "OFFLINE_TOKEN",
-        description: `Offline payment from ${sender.name} to ${receiver.email}`
-      }],
-      { session }
-    );
-
-    // ✅ Commit transaction
-    await session.commitTransaction();
+    await offlineToken.save();
 
     res.json({
       success: true,
       message: "Offline payment completed ✓",
-      senderBalance: sender.balance,
-      receiverBalance: receiver.balance,
-      transaction: {
-        id: transaction[0]._id,
-        amount: offlineToken.amount,
-        receiver: receiver.email,
-        blockchainHash,
-        status: "SUCCESS"
-      }
+      senderBalance: result.senderBalance,
+      receiverBalance: result.receiverBalance,
+      transaction: result.transaction
     });
 
   } catch (error) {
-    await session.abortTransaction();
     console.error("Token verification error:", error);
     res.status(500).json({ success: false, message: "Token verification failed" });
-  } finally {
-    session.endSession();
-  }
-};
-
-/**
- * GET /api/payment/bank-rates
- * Get bank rates for currency conversion
- */
-exports.getBankRatesHandler = async (req, res) => {
-  try {
-    const { amount, currency = "USD" } = req.query;
-
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ message: "Invalid amount" });
-    }
-
-    const rates = getBankRates(parseFloat(amount), currency);
-
-    res.json({
-      amount: parseFloat(amount),
-      currency,
-      rates: rates.map(rate => ({
-        bankName: rate.bankName,
-        exchangeRate: rate.exchangeRate,
-        convertedAmount: rate.convertedAmount,
-        processingFee: rate.processingFee,
-        netAmount: rate.netAmount
-      }))
-    });
-
-  } catch (error) {
-    console.error("Bank rates error:", error);
-    res.status(500).json({ message: "Failed to fetch bank rates" });
   }
 };
 
@@ -437,21 +272,14 @@ exports.fraudCheck = async (req, res) => {
       return res.status(400).json({ message: "Invalid email or amount" });
     }
 
-    // Check if receiver is new
-    const isNewReceiver = !await Transaction.findOne({
-      sender: req.user.id,
-      receiverEmail: email
-    });
-
-    const fraud = await checkFraud(parseFloat(amount), email, isNewReceiver);
+    const fraud = await getFraudCheck(parseFloat(amount), email, req.user.id);
 
     res.json({
       email,
       amount: parseFloat(amount),
       riskLevel: fraud.level,
       score: fraud.score,
-      message: fraud.message,
-      isNewReceiver
+      message: fraud.message
     });
 
   } catch (error) {
@@ -472,7 +300,7 @@ exports.convertCurrency = async (req, res) => {
       return res.status(400).json({ message: "Invalid amount" });
     }
 
-    const conversion = convert(parseFloat(amount), to);
+    const conversion = convertCurrencyAmount(parseFloat(amount), to);
 
     res.json({
       amountINR: parseFloat(amount),
@@ -486,6 +314,38 @@ exports.convertCurrency = async (req, res) => {
   } catch (error) {
     console.error("Conversion error:", error);
     res.status(500).json({ message: "Conversion failed" });
+  }
+};
+
+/**
+ * GET /api/payment/bank-rates
+ * Get bank rates for currency conversion
+ */
+exports.getBankRatesHandler = async (req, res) => {
+  try {
+    const { amount, currency = "USD" } = req.query;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
+    }
+
+    const rates = getBankRatesForAmount(parseFloat(amount), currency);
+
+    res.json({
+      amount: parseFloat(amount),
+      currency,
+      rates: rates.map(rate => ({
+        bankName: rate.bankName,
+        exchangeRate: rate.exchangeRate,
+        convertedAmount: rate.convertedAmount,
+        processingFee: rate.processingFee,
+        netAmount: rate.netAmount
+      }))
+    });
+
+  } catch (error) {
+    console.error("Bank rates error:", error);
+    res.status(500).json({ message: "Failed to fetch bank rates" });
   }
 };
 
@@ -585,18 +445,14 @@ exports.generateQRCode = async (req, res) => {
 /**
  * POST /api/payment/qr-pay
  * Process QR payment (scanned by receiver)
- * ATOMIC TRANSACTION: Both wallets updated
+ * Uses unified payment engine
  */
 exports.processQRPayment = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { qrData } = req.body;
 
     // Validation
     if (!qrData) {
-      await session.abortTransaction();
       return res.status(400).json({ 
         success: false,
         message: "QR data required" 
@@ -608,7 +464,6 @@ exports.processQRPayment = async (req, res) => {
     try {
       qrPayload = typeof qrData === 'string' ? JSON.parse(qrData) : qrData;
     } catch (e) {
-      await session.abortTransaction();
       return res.status(400).json({ 
         success: false,
         message: "Invalid QR data" 
@@ -617,93 +472,49 @@ exports.processQRPayment = async (req, res) => {
 
     const { senderEmail, receiverEmail, amount, currency } = qrPayload;
 
-    // Get sender and receiver (within session)
-    const sender = await User.findOne({ email: senderEmail }).session(session);
-    const receiver = await User.findById(req.user.id).session(session); // Receiver is authenticated user
-
-    if (!sender || !receiver) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
-    // Verify receiver matches QR data
-    if (receiver.email !== receiverEmail) {
-      await session.abortTransaction();
+    // Verify receiver matches authenticated user
+    const receiver = await User.findById(req.user.id);
+    if (!receiver || receiver.email !== receiverEmail) {
       return res.status(403).json({ 
         success: false,
         message: "You are not the intended receiver" 
       });
     }
 
-    // Check sender balance
-    if (sender.balance < amount) {
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false,
-        message: "Sender has insufficient balance" 
-      });
+    // Get sender to verify they exist
+    const sender = await User.findOne({ email: senderEmail });
+    if (!sender) {
+      return res.status(404).json({ success: false, message: "Sender not found" });
     }
 
-    // ✅ ATOMIC UPDATE: Deduct from sender
-    sender.balance -= amount;
-    sender.updatedAt = new Date();
-    await sender.save({ session });
-
-    // ✅ ATOMIC UPDATE: Add to receiver
-    receiver.balance += amount;
-    receiver.updatedAt = new Date();
-    await receiver.save({ session });
-
-    // Generate blockchain hash
-    const blockchainHash = await recordOnBlockchain(
-      sender.email,
-      receiver.email,
+    // ✅ Process payment using unified engine
+    const result = await processPayment({
+      senderId: sender._id,
+      receiverEmail: receiver.email,
       amount,
-      new Date().toISOString()
-    );
+      currency: currency || "INR",
+      bankName: "Unknown",
+      mode: "QR",
+      description: `QR payment`
+    });
 
-    // ✅ Create transaction record (within session)
-    const transaction = await Transaction.create(
-      [{
-        sender: sender._id,
-        receiver: receiver._id,
-        senderCountry: sender.country || "India",
-        receiverEmail: receiver.email,
-        receiverCountry: receiver.country || "USA",
-        amount,
-        currency: currency || "INR",
-        blockchainHash,
-        status: "SUCCESS",
-        mode: "QR",
-        description: `QR payment from ${sender.name} to ${receiver.name}`
-      }],
-      { session }
-    );
-
-    // ✅ Commit transaction
-    await session.commitTransaction();
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.message
+      });
+    }
 
     res.json({
       success: true,
       message: "QR payment processed successfully ✓",
-      senderBalance: sender.balance,
-      receiverBalance: receiver.balance,
-      transaction: {
-        id: transaction[0]._id,
-        sender: sender.email,
-        receiver: receiver.email,
-        amount,
-        currency,
-        blockchainHash,
-        status: "SUCCESS"
-      }
+      senderBalance: result.senderBalance,
+      receiverBalance: result.receiverBalance,
+      transaction: result.transaction
     });
 
   } catch (error) {
-    await session.abortTransaction();
     console.error("QR payment error:", error);
     res.status(500).json({ success: false, message: "QR payment processing failed" });
-  } finally {
-    session.endSession();
   }
 };
